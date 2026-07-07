@@ -1,0 +1,58 @@
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# PaddleOCR / PaddlePaddle downloaded model weights
+# (auto-downloaded on first run to ~/.paddlex/)
+*.pdmodel
+*.pdiparams
+*.pdiparams.info
+inference/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# VS Code
+.vscode/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Logs & temp files
+*.log
+*.tmp
+*.bak
+
+# Environment variables
+.env
+.env.*
+
+# Kaggle
+kaggle.json
+
+# Build / dist
+build/
+dist/
+*.egg-info/
+
+# uv lock file (not needed for pip-based install)
+uv.lock
+
+# Dev/experiment scripts not part of core deliverable
+app.py
+run.py
+generate_samples.py
+run_kaggle_benchmark.py
+benchmark_report.md
+pyproject.toml
