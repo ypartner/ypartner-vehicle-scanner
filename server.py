@@ -69,7 +69,7 @@ async def detect_license_plate(
     file: UploadFile = File(...)
 ):
 
-    # Validate file type
+
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(
             status_code=400,
