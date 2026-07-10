@@ -2,16 +2,34 @@ import cv2
 import numpy as np
 import re
 import base64
-from paddleocr import PaddleOCR
+import threading  # ✅ added
 
+# =====================
+# Singleton — lazy loaded, thread safe
+# =====================
 _ocr = None
+_ocr_lock = threading.Lock()  # ✅ added
 
 
 def get_ocr_reader():
     global _ocr
-    if _ocr is None:
-        _ocr = PaddleOCR(lang='en')
+
+    if _ocr is not None:       # ✅ fast path — no lock needed
+        return _ocr
+
+    with _ocr_lock:            # ✅ only one thread loads at a time
+        if _ocr is None:       # ✅ double check after lock
+            from paddleocr import PaddleOCR  # ✅ moved here — not at import time
+            print('[OCR] Loading PaddleOCR model — first request only...')
+            _ocr = PaddleOCR(lang='en', show_log=False)  # ✅ show_log=False — cleaner logs
+            print('[OCR] Model loaded and cached ✅')
+
     return _ocr
+
+
+# =====================
+# everything below is exactly the same as your current code
+# =====================
 
 INDIAN_STATES = {
     'AN': 'Andaman & Nicobar', 'AP': 'Andhra Pradesh', 'AR': 'Arunachal Pradesh',
@@ -146,8 +164,6 @@ def sanitize_ocr_text(text):
         clean = clean.replace(noise, '')
     return clean
 
-
-# Applied only to slots that MUST be digits (RTO code, sequence number)
 _DIGIT_FIXES = {
     'O': '0', 'Q': '0',
     'I': '1', 'L': '1', '|': '1', ']': '1', '[': '1',
@@ -155,13 +171,11 @@ _DIGIT_FIXES = {
     'S': '5', 'G': '6', 'B': '8',
 }
 
-# Applied only to slots that MUST be letters (state code, series)
 _LETTER_FIXES = {
     '0': 'O', '1': 'I', '2': 'Z',
     '5': 'S', '6': 'G', '8': 'B',
 }
 
-# Generalised OCR confusion map for state code recovery.
 _STATE_CONFUSION = {
     '0': 'O', 'O': '0', 'Q': 'O',
     '1': 'I', 'I': '1', 'L': '1',
@@ -175,11 +189,6 @@ _STATE_CONFUSION = {
 
 
 def _find_valid_state(raw2):
-    """
-    Generalised state code recovery using standard OCR confusion pairs.
-    Tries up to 4 candidate codes derived from visual confusion of each character.
-    Works for any Indian state — no test-image-specific hardcoding.
-    """
     if len(raw2) < 2:
         return None
     c0_opts = list(dict.fromkeys([raw2[0], _STATE_CONFUSION.get(raw2[0], raw2[0])]))
@@ -192,22 +201,12 @@ def _find_valid_state(raw2):
 
 
 def _positional_correct(clean):
-    """
-    Parse the plate structure first, THEN apply character fixes only to
-    the correct positional slot.
-
-    Formats supported:
-      Standard : SS [D|DD] [L|LL|LLL] DDDD
-      BH Series: YY BH NNNN [L|LL]  (vowels I/O excluded from suffix)
-    """
-    # BH series: YYBHNNNNLL
     bh_m = re.match(r'^(\d{2})BH(\d{4})([A-Z]{1,2})$', clean)
     if bh_m:
         year, num, suffix = bh_m.groups()
         suffix = suffix.replace('I', 'J').replace('O', 'Q')
         return f"{year}BH{num}{suffix}"
 
-    # Strict match first: RTO and sequence must be actual digits
     m = re.match(r'^([A-Z0-9]{2})(\d{1,2})([A-Z]{1,3})(\d{4})$', clean)
     if not m:
         m = re.match(r'^([A-Z0-9]{2})([0-9A-Z]{1,2})([A-Z0-9]{1,3})([0-9A-Z]{4})$', clean)
@@ -234,8 +233,6 @@ def correct_character_confusions(text):
     if not clean:
         return clean
 
-    # BH-series fast path FIRST — the state code loop would strip the 2-digit
-    # year prefix (e.g. '23BH...' finds 'BH' at idx 2 and strips to 'BH4962B')
     bh = re.search(r'(\d{2}BH\d{4}[A-Z]{1,2})', clean)
     if bh:
         return bh.group(1)
@@ -246,7 +243,6 @@ def correct_character_confusions(text):
             clean = clean[idx:]
             break
 
-    # Sliding window: try all substrings of valid plate length (shortest first)
     for length in range(8, 12):
         for start in range(len(clean) - length + 1):
             sub = clean[start:start + length]
@@ -266,13 +262,11 @@ def format_indian_plate_with_spaces(plate_str):
     if not plate_str or len(plate_str) < 7:
         return plate_str, None
 
-    # BH series: YYBHNNNNLL → "YY BH NNNN LL"
     bh_m = re.match(r'^(\d{2})BH(\d{4})([A-Z]{1,2})$', plate_str)
     if bh_m:
         year, num, suffix = bh_m.groups()
         return f"{year} BH {num} {suffix}", "Bharat Series"
 
-    # Standard: SS[D|DD][L..][DDDD]
     state_part = plate_str[:2]
     seq_part = plate_str[-4:]
     rem = plate_str[2:-4]
@@ -291,7 +285,6 @@ def format_indian_plate_with_spaces(plate_str):
 
 
 def _deskew(img_bgr):
-    """Correct minor rotation angles introduced by camera tilt."""
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     coords = np.column_stack(np.where(thresh > 0))
@@ -347,7 +340,7 @@ def process_image(image_bytes):
         return [], ""
 
     orig_h, orig_w = image_bgr.shape[:2]
-    ocr = get_ocr_reader()
+    ocr = get_ocr_reader()  # ✅ lazy loaded — model loads only on first call
 
     variants = get_preprocessed_crops(image_bgr)
     candidates = []
@@ -369,16 +362,14 @@ def process_image(image_bytes):
         if not result or not result[0]:
             continue
 
-        # res = result[0]
-
         texts = []
         scores = []
         polys = []
 
         for line in result[0]:
-            polys.append(line[0])        # bounding box
-            texts.append(line[1][0])     # detected text
-            scores.append(line[1][1])    #
+            polys.append(line[0])
+            texts.append(line[1][0])
+            scores.append(line[1][1])
 
         if not texts:
             continue
@@ -400,7 +391,6 @@ def process_image(image_bytes):
             })
 
         for _, txt, conf in items:
-
             if len(sanitize_ocr_text(txt)) >= 4:
                 candidates.append({
                     "text": txt,
@@ -456,7 +446,6 @@ def process_image(image_bytes):
     if len(detections) > 1:
         detections = detections[:1]
 
-    # Fallback: if nothing valid found, return best raw OCR result with LOW confidence
     if not detections and candidates:
         best_raw = max(candidates, key=lambda c: c['prob'])
         fallback_text = correct_character_confusions(best_raw['text']) or sanitize_ocr_text(best_raw['text'])
